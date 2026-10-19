@@ -4,6 +4,14 @@ A research tool that automatically discovers, evaluates, and ranks service provi
 
 **Live demo → [provider-finder-5epi8nt2sk64a3kwetgvnr.streamlit.app](https://provider-finder-5epi8nt2sk64a3kwetgvnr.streamlit.app/)**
 
+## Screenshots
+
+![Overview](screenshots/overview.png)
+
+![Providers table](screenshots/providers-table.png)
+
+![Provider detail](screenshots/provider-detail.png)
+
 ---
 
 ## What it does
