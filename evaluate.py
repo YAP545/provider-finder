@@ -332,19 +332,44 @@ def evaluate(rec: dict, use_ai: bool = True, refresh: bool = False) -> dict:
 
 
 def add_shortlist(rows: list) -> list:
-    """Shortlist top 10 providers with score >= 50, excluding major red flags or Other category."""
+    """Shortlist 10 providers total, score >= 50, no major red flags.
+    Ensure at least one provider from each of the 5 categories if available,
+    then fill remaining spots by highest suitability score.
+    """
     rows.sort(key=lambda r: -r["suitability_score"])
-    count = 0
     for i, r in enumerate(rows, 1):
         r["rank"] = i
-        has_red_flags = bool(r.get("red_flags") and r["red_flags"].strip())
+        r["shortlisted"] = False
+
+    categories = list(config.CATEGORIES.keys())
+    shortlisted_indices = []
+
+    # 1. Top eligible provider for each category
+    for cat in categories:
+        for idx, r in enumerate(rows):
+            if idx in shortlisted_indices:
+                continue
+            has_red_flags = bool(r.get("red_flags") and str(r["red_flags"]).strip() and str(r["red_flags"]).strip().lower() != "nan")
+            eligible = r["suitability_score"] >= config.SHORTLIST_MIN_SCORE and r.get("category") == cat and not has_red_flags
+            if eligible:
+                shortlisted_indices.append(idx)
+                break
+
+    # 2. Fill remaining spots up to SHORTLIST_SIZE by highest suitability score
+    for idx, r in enumerate(rows):
+        if len(shortlisted_indices) >= config.SHORTLIST_SIZE:
+            break
+        if idx in shortlisted_indices:
+            continue
+        has_red_flags = bool(r.get("red_flags") and str(r["red_flags"]).strip() and str(r["red_flags"]).strip().lower() != "nan")
         is_other = r.get("category") == "Other"
         eligible = r["suitability_score"] >= config.SHORTLIST_MIN_SCORE and not is_other and not has_red_flags
-        if eligible and count < config.SHORTLIST_SIZE:
-            r["shortlisted"] = True
-            count += 1
-        else:
-            r["shortlisted"] = False
+        if eligible:
+            shortlisted_indices.append(idx)
+
+    for idx in shortlisted_indices:
+        rows[idx]["shortlisted"] = True
+
     return rows
 
 

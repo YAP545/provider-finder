@@ -150,6 +150,8 @@ if len(f):
     a, b = st.columns(2)
     with a:
         st.markdown(f"### {row['name']} — {row['category']} ({row['provider_type']})")
+        if row.get("name_raw") and str(row["name_raw"]).strip() != str(row["name"]).strip():
+            st.caption(f"Original title: {row['name_raw']}")
         st.markdown(f"[{row['website']}]({row['website']})")
         
         # Scored_by badge

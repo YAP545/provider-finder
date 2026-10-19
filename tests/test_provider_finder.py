@@ -173,3 +173,22 @@ def test_scoring_calculation():
         w["transparency"] * transparency
     ), 1)
     assert score == expected
+
+
+# 6. Verification rule: No strength claims public pricing when pricing_status is not Verified
+def test_verified_only_claim_rule():
+    import pandas as pd
+    from pathlib import Path
+
+    csv_path = Path("data/providers.csv")
+    assert csv_path.exists()
+    df = pd.read_csv(csv_path)
+
+    for idx, row in df.iterrows():
+        s = str(row.get("strengths", "")).lower()
+        price_status = str(row.get("pricing_status", ""))
+        if "public pricing" in s or "verified rates" in s:
+            assert price_status == "Verified", f"Row {idx} ({row['name']}) claims public pricing/rates but status is {price_status}"
+        if price_status != "Verified":
+            assert "public pricing" not in s and "verified rates" not in s, f"Row {idx} ({row['name']}) has status {price_status} but strengths mentions pricing/rates"
+
