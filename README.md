@@ -24,7 +24,7 @@ A research tool that automatically discovers, evaluates, and ranks service provi
 - **Transparent scoring** — suitability score (0–100) is computed in code from four weighted sub-scores: **skill relevance** (35%), **experience** (25%), **portfolio** (25%), and **transparency** (15%); the LLM never picks the final score directly
 - **Domain deduplication** — normalizes provider domains (stripping `www.` and trailing slashes) and keeps only the highest-scoring row
 - **Selective rescoring** — `--rescore-fallback` allows re-scoring only rows where the AI was previously not used, reusing cached website data without touching other rows
-- **Shortlisting & export** — top 10 providers with score ≥ 50 flagged as shortlisted; exported to `data/providers.csv` and formatted `data/providers.xlsx`
+- **Shortlisting & export** — 10 providers with score at least 50 and no red flags, with at least one provider from each of the 5 categories, each with strengths and limitations that match the verification status; exported to `data/providers.csv` and formatted `data/providers.xlsx`
 - **Dashboard** — interactive Streamlit app with filters, AI vs. fallback badges, score breakdown progress bars, side-by-side provider comparison (2–3 providers), and CSV/Excel downloads
 
 ---
@@ -61,6 +61,8 @@ provider-finder/
 ├── app.py               # Streamlit dashboard (filters, comparison, progress bars, CSV/Excel downloads)
 ├── requirements.txt     # Python dependencies
 ├── .env.example         # Template — copy to .env and fill in your values
+├── tests/               # Automated offline unit tests (scraping, pricing, scoring, dedup, rules)
+├── screenshots/         # Dashboard screenshots for documentation
 └── data/
     ├── providers.csv    # Pipeline output (tracked in git as example data)
     ├── providers.xlsx   # Same data, formatted Excel
@@ -89,11 +91,13 @@ cp .env.example .env   # Windows: copy .env.example .env
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `LLM_API_KEY` | Yes (for AI mode) | Your Google Gemini API key (or key for any OpenAI-compatible endpoint) |
-| `LLM_MODEL` | Yes (for AI mode) | Model name, e.g. `gemini-2.5-flash` |
+| `LLM_MODEL` | Yes (for AI mode) | Model name, e.g. `gemini-flash-latest` |
 | `LLM_BASE_URL` | No | Leave blank for Gemini; set to your endpoint URL for Groq, Ollama, etc. |
 | `BOT_CONTACT` | No | Your contact email added to the crawler's User-Agent string |
 
 > Without `LLM_API_KEY` / `LLM_MODEL` the pipeline still runs in keyword-rule mode — no API key needed.
+> 
+> *Note on models:* Available model names may vary depending on your API key type and region; `gemini-3.1-flash-lite` is a lighter alternative with higher free tier limits.
 
 ### 3. Run the pipeline
 
@@ -115,10 +119,12 @@ python -m streamlit run app.py
 
 ## Data quality
 
-- **Evidence verification** — Experience claims, portfolio links, and pricing snippets are independently verified in code against the raw cached website text (without asking the LLM):
+- **Evidence verification & columns** — Experience claims, portfolio links, and pricing snippets are independently verified in code against the raw cached website text (without asking the LLM):
   - **`Verified`**: The claim numbers, key terms, or portfolio URLs were located directly in the crawl text.
   - **`Unverified`**: The AI generated an assertion that could not be confirmed in the website text excerpt.
   - **`Unknown`**: No evidence or pricing was published by the provider.
+  - Key tracking columns include: `experience_source_url`, `experience_status`, `portfolio_source_url`, `portfolio_status`, `pricing_source_url`, `pricing_status`, `last_checked`, `strengths`, `limitations`, and `name_raw` (original raw title before suffix stripping).
+- **Strict pricing extraction** — Pricing is marked `Unknown` unless a real price or package phrase is found (such as "starting at", "per hour", "/hr", "per month", "packages from", "rates"). Revenue figures (e.g. case study growth), form budget dropdown ranges (e.g. "< $5k $5k - $15k"), and startup funding/news snippets are rejected to avoid false positives.
 - **Cache expiration & TTL** — Both crawled site text and LLM evaluations are cached with a configurable 14-day TTL (`CACHE_TTL_DAYS=14`). Expired records are automatically re-fetched.
   - Use `--refresh` to bypass cache and re-crawl all providers:
     ```bash
