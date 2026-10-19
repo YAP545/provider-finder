@@ -1,9 +1,13 @@
 """Step 3: categorize + evaluate with an LLM, with a rule-based fallback.
-The final suitability score is computed in code from transparent sub-scores, not by the LLM."""
+The final suitability score is computed in code from transparent sub-scores, not by the LLM.
+LLM results are cached per-domain under data/cache/llm/<domain>.json.
+"""
 import json
+import random
 import re
 import time
 import logging
+from pathlib import Path
 
 import requests
 
@@ -11,6 +15,7 @@ import config
 
 log = logging.getLogger(__name__)
 CATS = list(config.CATEGORIES) + ["Other"]
+LLM_CACHE = Path("data/cache/llm")
 
 PROMPT = """You evaluate service providers using ONLY the website text below.
 Rules: never invent facts. If something is not in the text, use "" or [] or "none found".
@@ -45,6 +50,9 @@ SERVICE_PATTERNS = {
     "Bookkeeping / operations": ("Business Operations", r"bookkeeping|accounting|operations consult|process improvement|back[- ]office"),
 }
 
+# Tracks HTTP failure status codes across the run: {status_code: count}
+failure_counts: dict[int, int] = {}
+
 
 def _clamp(x, lo=0, hi=10):
     try:
@@ -53,9 +61,44 @@ def _clamp(x, lo=0, hi=10):
         return 0.0
 
 
-def call_llm(prompt: str):
+def _llm_cache_path(domain: str) -> Path:
+    LLM_CACHE.mkdir(parents=True, exist_ok=True)
+    return LLM_CACHE / f"{domain}.json"
+
+
+def load_llm_cache(domain: str) -> dict | None:
+    p = _llm_cache_path(domain)
+    if p.exists():
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            return None
+    return None
+
+
+def save_llm_cache(domain: str, result: dict) -> None:
+    try:
+        _llm_cache_path(domain).write_text(
+            json.dumps(result, indent=1, ensure_ascii=False), encoding="utf-8"
+        )
+    except OSError as e:
+        log.warning("Could not write LLM cache for %s: %s", domain, e)
+
+
+def call_llm(prompt: str, domain: str = "") -> dict | None:
+    """Call the LLM API with exponential backoff + jitter (up to 5 tries).
+    Checks the per-domain disk cache first; saves successful results to cache.
+    """
     if not (config.LLM_API_KEY and config.LLM_MODEL):
         return None
+
+    # Check disk cache before hitting the API
+    if domain:
+        cached = load_llm_cache(domain)
+        if cached is not None:
+            log.info("LLM cache hit for %s", domain)
+            return cached
+
     if "googleapis.com" in config.LLM_BASE_URL:   # native Gemini API
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{config.LLM_MODEL}:generateContent"
         headers = {"x-goog-api-key": config.LLM_API_KEY}
@@ -66,21 +109,34 @@ def call_llm(prompt: str):
         headers = {"Authorization": f"Bearer {config.LLM_API_KEY}"}
         body = {"model": config.LLM_MODEL, "temperature": 0,
                 "messages": [{"role": "user", "content": prompt}]}
-    for attempt in range(3):
+
+    for attempt in range(5):
         try:
             r = requests.post(url, json=body, headers=headers, timeout=60)
-            if r.status_code == 429:
-                time.sleep(5 * (attempt + 1))
+            if r.status_code in (429, 503):
+                # Exponential backoff with jitter: 2s, 4s, 8s, 16s, 32s ± up to 1s
+                wait = (2 ** (attempt + 1)) + random.uniform(0, 1)
+                log.warning("LLM HTTP %s (attempt %d/%d) — retrying in %.1fs",
+                            r.status_code, attempt + 1, 5, wait)
+                failure_counts[r.status_code] = failure_counts.get(r.status_code, 0) + 1
+                time.sleep(wait)
                 continue
-            r.raise_for_status()
+            if not r.ok:
+                log.warning("LLM HTTP %s — %s", r.status_code, r.text[:200])
+                failure_counts[r.status_code] = failure_counts.get(r.status_code, 0) + 1
+                time.sleep(2)
+                continue
             data = r.json()
             content = (data["candidates"][0]["content"]["parts"][0]["text"]
                        if "candidates" in data else data["choices"][0]["message"]["content"])
             m = re.search(r"\{.*\}", content, re.S)
-            return json.loads(m.group(0)) if m else None
+            result = json.loads(m.group(0)) if m else None
+            if result and domain:
+                save_llm_cache(domain, result)
+            return result
         except (requests.RequestException, KeyError, IndexError, ValueError) as e:
-            log.warning("LLM call failed: %s", e)
-            time.sleep(2)
+            log.warning("LLM call failed (attempt %d/5): %s", attempt + 1, e)
+            time.sleep(2 ** (attempt + 1))
     return None
 
 
@@ -106,9 +162,13 @@ def heuristic(rec: dict) -> dict:
 
 def evaluate(rec: dict, use_ai: bool = True) -> dict:
     llm = None
+    domain = rec.get("domain", "")
     if use_ai:
-        llm = call_llm(PROMPT.format(cats=CATS, name=rec["name"], website=rec["website"],
-                                     meta=rec["meta_description"], text=rec["text_excerpt"]))
+        llm = call_llm(
+            PROMPT.format(cats=CATS, name=rec["name"], website=rec["website"],
+                          meta=rec["meta_description"], text=rec["text_excerpt"]),
+            domain=domain,
+        )
     ai_used = llm is not None
     ev = llm or heuristic(rec)
 
@@ -139,7 +199,8 @@ def evaluate(rec: dict, use_ai: bool = True) -> dict:
         "skill_relevance": round(skill, 1), "experience_score": round(exp, 1),
         "portfolio_score": portfolio, "transparency_score": transparency,
         "suitability_score": round(score, 1), "confidence": ev.get("confidence", "low"),
-        "ai_used": ai_used, "source_query": rec["source_query"],
+        "ai_used": ai_used, "scored_by": "AI" if ai_used else "fallback",
+        "source_query": rec["source_query"],
         "pages_checked": j(rec["pages_checked"]), "collected_at": rec["collected_at"],
     }
 
@@ -150,3 +211,14 @@ def add_shortlist(rows: list) -> list:
         r["rank"] = i
         r["shortlisted"] = i <= config.SHORTLIST_SIZE and r["suitability_score"] >= config.SHORTLIST_MIN_SCORE
     return rows
+
+
+def dedup_by_domain(rows: list) -> list:
+    """Keep only the highest-scored row per normalised domain."""
+    best: dict[str, dict] = {}
+    for r in rows:
+        from urllib.parse import urlparse
+        domain = urlparse(r["website"]).netloc.lower().removeprefix("www.").rstrip("/")
+        if domain not in best or r["suitability_score"] > best[domain]["suitability_score"]:
+            best[domain] = r
+    return list(best.values())

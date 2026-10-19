@@ -7,7 +7,7 @@ from openpyxl.utils import get_column_letter
 COLUMNS = ["rank", "shortlisted", "suitability_score", "name", "website", "category", "provider_type", "country",
            "country_source", "services", "key_skills", "portfolio_urls", "pricing_info", "email", "phone",
            "social_links", "summary", "experience_evidence", "red_flags", "skill_relevance", "experience_score",
-           "portfolio_score", "transparency_score", "confidence", "ai_used", "source_query", "pages_checked",
+           "portfolio_score", "transparency_score", "confidence", "ai_used", "scored_by", "source_query", "pages_checked",
            "collected_at"]
 
 

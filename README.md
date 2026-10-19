@@ -11,11 +11,13 @@ A research tool that automatically discovers, evaluates, and ranks service provi
 - **Discovery** — searches DuckDuckGo across five categories and six regions (US, UK, India, Australia, Canada, global) using `ddgs`; filters out marketplaces, directories, and listicle pages
 - **Collection** — visits each provider's own website (home + up to 4 sub-pages: about, services, portfolio, pricing, contact); respects `robots.txt` and rate-limits
 - **Extraction** — pulls services, key skills, email, phone, social links, portfolio URLs, pricing snippets, and country from page text and JSON-LD structured data
-- **LLM evaluation** — sends page text to Google Gemini (or any OpenAI-compatible endpoint) to classify the provider, identify services/skills, assess experience evidence, and generate a summary; falls back to keyword-rule heuristics if the API call fails or no key is configured
-- **Transparent scoring** — suitability score (0–100) is computed in code from four weighted sub-scores: **skill relevance**, **experience**, **portfolio**, and **transparency**; the LLM never picks the score directly
-- **Shortlisting** — top 10 providers with score ≥ 50 are flagged as shortlisted
-- **Dashboard** — Streamlit app with sidebar filters (category, country, min score, shortlisted only, has pricing, keyword search) plus per-provider detail view and CSV download
-- **Export** — results saved to `data/providers.csv` and `data/providers.xlsx` (two sheets: All providers + Shortlist, formatted with frozen header row)
+- **LLM evaluation & caching** — sends page text to Google Gemini (or any OpenAI-compatible endpoint) to classify the provider, extract skills, assess experience, and summarize; caches every LLM result on disk (`data/cache/llm/<domain>.json`) so rerun calls only evaluate new providers
+- **Resilient API calling** — exponential backoff with jitter (up to 5 retries starting at 2s) for HTTP 429 and 503 errors, logging status codes on failures
+- **Transparent scoring** — suitability score (0–100) is computed in code from four weighted sub-scores: **skill relevance** (35%), **experience** (25%), **portfolio** (25%), and **transparency** (15%); the LLM never picks the final score directly
+- **Domain deduplication** — normalizes provider domains (stripping `www.` and trailing slashes) and keeps only the highest-scoring row
+- **Selective rescoring** — `--rescore-fallback` allows re-scoring only rows where the AI was previously not used, reusing cached website data without touching other rows
+- **Shortlisting & export** — top 10 providers with score ≥ 50 flagged as shortlisted; exported to `data/providers.csv` and formatted `data/providers.xlsx`
+- **Dashboard** — interactive Streamlit app with filters, AI vs. fallback badges, score breakdown progress bars, side-by-side provider comparison (2–3 providers), and CSV/Excel downloads
 
 ---
 
@@ -34,7 +36,7 @@ score = 10 × (0.35 × skill + 0.25 × experience + 0.25 × portfolio + 0.15 × 
 | **portfolio** (0–10) | Code-counted: 2+ portfolio URLs → 8 pts, 1 → 5 pts; +2 if "case study" appears in text | 10 |
 | **transparency** (0–10) | Code-counted: email (+4), phone (+1), public pricing (+3), known country (+2) | 10 |
 
-**Keyword-rule fallback** (used when no LLM key is set or the API call fails): skill relevance is estimated from regex hit counts across eight service patterns (web dev, AI/automation, UI/UX, branding, SEO, content marketing, virtual assistance, bookkeeping); experience score is derived from year mentions and "clients"/"case study" keywords. The fallback is always noted in the `confidence` and `ai_used` columns.
+**Keyword-rule fallback** (used when no LLM key is set or the API call fails): skill relevance is estimated from regex hit counts across eight service patterns; experience score is derived from year mentions and "clients"/"case study" keywords. The fallback is recorded in `scored_by` ("AI" or "fallback") and reflected with clear badges in the dashboard.
 
 ---
 
@@ -42,19 +44,20 @@ score = 10 × (0.35 × skill + 0.25 × experience + 0.25 × portfolio + 0.15 × 
 
 ```
 provider-finder/
-├── pipeline.py          # Entry point: orchestrates all four steps
+├── pipeline.py          # Entry point: orchestrates discovery, collection, evaluation, export
 ├── discover.py          # Step 1 — DuckDuckGo search, candidate filtering
 ├── collect.py           # Step 2 — website crawl, extraction (email/phone/pricing/portfolio)
-├── evaluate.py          # Step 3 — LLM evaluation + keyword fallback + scoring
+├── evaluate.py          # Step 3 — LLM evaluation + disk caching + backoff + keyword fallback + scoring
 ├── export.py            # Step 4 — CSV + formatted Excel output
 ├── config.py            # All settings: categories, weights, blocked domains, LLM config
-├── app.py               # Streamlit dashboard
+├── app.py               # Streamlit dashboard (filters, comparison, progress bars, CSV/Excel downloads)
 ├── requirements.txt     # Python dependencies
 ├── .env.example         # Template — copy to .env and fill in your values
 └── data/
     ├── providers.csv    # Pipeline output (tracked in git as example data)
     ├── providers.xlsx   # Same data, formatted Excel
-    └── cache/           # Per-domain JSON cache (git-ignored)
+    └── cache/           # Cached website data and LLM responses (git-ignored)
+        └── llm/         # Per-domain LLM responses JSON cache
 ```
 
 ---
@@ -87,8 +90,9 @@ cp .env.example .env   # Windows: copy .env.example .env
 ### 3. Run the pipeline
 
 ```bash
-python pipeline.py --target 50        # collect and evaluate 50 providers (AI mode)
+python pipeline.py --target 50          # collect and evaluate 50 providers (AI mode with caching)
 python pipeline.py --target 50 --no-ai  # keyword-rules only, no API calls
+python pipeline.py --rescore-fallback   # re-scores only previous fallback rows using AI & cached site data
 ```
 
 Results are saved to `data/providers.csv` and `data/providers.xlsx`.
@@ -116,7 +120,7 @@ python -m streamlit run app.py
 
 ## Limitations
 
-- **Rate limits** — DuckDuckGo and the Gemini free tier both throttle heavy usage; the pipeline adds delays and retries but very large runs may hit 429s
+- **Rate limits** — DuckDuckGo and the Gemini free tier both throttle heavy usage; exponential backoff with jitter handles temporary 429/503 spikes, but very large runs may need pacing
 - **Pricing extraction is heuristic** — only real pricing phrases (e.g. "starting at $X", "/hr", "per month", "packages from") are captured; results vary by how clearly a provider publishes rates
 - **Search availability** — discovery depends on DuckDuckGo returning results for the configured queries; niche categories or regions may yield fewer candidates
 - **robots.txt compliance** — sites that disallow crawling are skipped entirely, which can reduce coverage
