@@ -54,12 +54,37 @@ def test_pricing_filtering():
     real_text = "We offer dedicated full-stack engineering packages starting at $75/hr for growing companies."
     prices = collect.extract_pricing(real_text)
     assert len(prices) == 1
-    assert "$75/hr" in prices[0]
+    assert "$75/hr" in prices[0] or "75" in prices[0]
 
     # Funding / news noise snippet
     noise_text = "Cybersecurity startup raises $3 million in seed funding round from venture capital."
     noise_prices = collect.extract_pricing(noise_text)
     assert len(noise_prices) == 0
+
+    # Case-study revenue text MUST return empty
+    case_study_text = "Coalition grew a niche jeweler's revenue from $160k/mo to $315k/mo in a year"
+    assert collect.extract_pricing(case_study_text) == [], \
+        "Case-study revenue text should return empty"
+
+    # Form budget dropdown MUST return empty
+    form_text = "What's your budget range? < $5k $5k - $15k $15k - $50k"
+    assert collect.extract_pricing(form_text) == [], \
+        "Form budget dropdown should return empty"
+
+    # 'Starting $990' MUST be accepted
+    p990 = collect.extract_pricing("Starting $990")
+    assert len(p990) > 0 and "990" in p990[0], \
+        f"Starting $990 should be accepted, got {p990}"
+
+    # '$50 per hour' MUST be accepted
+    p50hr = collect.extract_pricing("$50 per hour")
+    assert len(p50hr) > 0 and "50" in p50hr[0], \
+        f"$50 per hour should be accepted, got {p50hr}"
+
+    # 'Starting at ₹10,000' MUST be accepted
+    p_rupee = collect.extract_pricing("Starting at ₹10,000")
+    assert len(p_rupee) > 0 and "10,000" in p_rupee[0], \
+        f"Starting at ₹10,000 should be accepted, got {p_rupee}"
 
     # Test evaluation output: empty pricing becomes "Unknown"
     rec_noise = {

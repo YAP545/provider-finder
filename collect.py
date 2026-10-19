@@ -32,15 +32,26 @@ BAD_EMAIL = re.compile(r"\.(png|jpe?g|gif|svg|webp|woff2?)$|sentry|example\.|wix
 # Strict pricing detection: require real pricing phrases
 PRICE_RE = re.compile(r"(?:[$€£₹]|USD|EUR|GBP|INR)\s?\d[\d,.]*\s?[kK]?(?:\s?(?:/|per)\s?(?:hr|hour|month|mo|project))?")
 PRICE_CTX = re.compile(
-    r"starting\s+at|from\s+[$€£₹]|packages?\s+from|pricing\s+starts?|"
-    r"/\s*hr\b|/\s*hour\b|per\s+hour|per\s+month|per\s+project|"
-    r"\brates?\b|\bplan\b|\bretainer\b|\bpackages?\b|\bpricing\b",
+    r"starting\s+(?:at|from|[$€£₹]|USD|EUR|GBP|INR)|starts?\s+(?:at|from)|"
+    r"plans?\s+starts?\s+(?:at|from)|from\s+[$€£₹]|packages?\s+from|pricing\s+starts?|"
+    r"/\s*hr\b|/\s*hour\b|per\s+hour|per\s+month|/\s*mo\b|/\s*month\b|per\s+project|"
+    r"\brates?\b|\bcosts?\b|fixed\s+price",
     re.I,
 )
 PRICE_NOISE = re.compile(
-    r"seed\s+fund|raised|secures?\s+(?:[$€£₹]|\d)|funding|investment\s+round|series\s+[a-e]|venture\s+capital|\bmillion\b",
+    r"\bgrew\b|\bincreas(?:e|ed|ing)?\b|\brevenue\b|\bleads\b|\broi\b|\bsales\b|"
+    r"in\s+a\s+year|case\s+stud(?:y|ies)|"
+    r"budget\s+range|select\s+budget|what\'?s\s+your\s+budget|your\s+budget|"
+    r"<\s*[$€£₹]|\d+k\s*-\s*\$?\d+k|"
+    r"seed\s+fund|raised|secures?|funding|investment|series\s+[a-e]|venture\s+capital|\bmillion\b",
     re.I,
 )
+CONCISE_PATTERNS = [
+    r"(?:starting(?:\s+(?:at|from))?|starts?\s+at|plans?\s+starts?\s+at|packages?\s+from|pricing\s+starts?(?:\s+at)?|from)\s+(?:(?:USD|EUR|GBP|INR|[$€£₹])\s?)?\d[\d,.]*\s?[kK]?(?:\s?(?:/|per)\s?(?:hr|hour|month|mo|project))?",
+    r"(?:[$€£₹]|USD|EUR|GBP|INR)\s?\d[\d,.]*\s?[kK]?(?:\s?(?:/|per)\s?(?:hr|hour|month|mo|project))",
+    r"(?:rates?|costs?)\s+(?:typically\s+fall\s+between\s+)?(?:[$€£₹]|USD|EUR|GBP|INR)\s?\d[\d,.]*(?:\s?(?:/|per)\s?(?:hr|hour|month|mo|project))?",
+    r"(?:[$€£₹]|USD|EUR|GBP|INR)\s?\d[\d,.]*\s?[kK]?(?:\s*setup)?(?:\s*·\s*[$€£₹]\s?\d[\d,.]*(?:/|per)\s?(?:mo|month|hr|hour))?",
+]
 SOCIAL_HOSTS = ("linkedin.com", "twitter.com", "x.com", "github.com", "dribbble.com", "behance.net", "instagram.com")
 
 
@@ -138,13 +149,58 @@ def extract_phones(soup):
     return [a["href"][4:].strip() for a in soup.find_all("a", href=True) if a["href"].lower().startswith("tel:")]
 
 
+REJECT_TERMS = [
+    "grew", "increase", "revenue", "leads", "roi", "sales",
+    "in a year", "case study", "budget range", "select budget", "your budget",
+    "iphone", "ipad", "shop now", "samsung", "galaxy", "macbook", "pixel"
+]
+# We use re-based accept so "from" only matches as an offer phrase (near service context)
+ACCEPT_TERMS_PLAIN = [
+    "starting at", "starts at", "starting", "packages",
+    "pricing", "per hour", "/hr", "per month", "/month", "per project", "rates", "cost"
+]
+# "from" is too generic on its own; only accept it when followed by currency
+ACCEPT_FROM_RE = re.compile(r"from\s+[$€£₹]|from\s+(?:usd|eur|gbp|inr)\s*\d", re.I)
+CURRENCY_RE = re.compile(r"[$€£₹]|USD\b|EUR\b|GBP\b|INR\b", re.I)
+
+
 def extract_pricing(text: str):
+    if not text:
+        return []
     out = []
-    for m in PRICE_RE.finditer(text[:20000]):
-        ctx = text[max(0, m.start() - 60): m.end() + 40].strip()
-        if PRICE_CTX.search(ctx) and not PRICE_NOISE.search(ctx) and ctx not in out:
-            out.append(ctx)
-    return out[:5]
+    # Find positions of currency symbols
+    for m in CURRENCY_RE.finditer(text[:25000]):
+        # Window of about 120 characters around currency symbol
+        start = max(0, m.start() - 60)
+        end = min(len(text), m.end() + 60)
+        window = text[start:end]
+        window_lower = window.lower()
+
+        # Reject if contains any noise terms
+        if any(term in window_lower for term in REJECT_TERMS):
+            continue
+
+        # Accept only if contains at least one offer term
+        if not any(term in window_lower for term in ACCEPT_TERMS_PLAIN):
+            if not ACCEPT_FROM_RE.search(window):
+                continue
+
+        # Make a short match (about 40 characters) around the currency match
+        w_curr_pos = m.start() - start
+        s_start = max(0, w_curr_pos - 15)
+        s_end = min(len(window), w_curr_pos + 25)
+        short_phrase = re.sub(r"\s+", " ", window[s_start:s_end]).strip()
+
+        # Must have digits
+        if not re.search(r"\d", short_phrase):
+            continue
+
+        norm = re.sub(r"\s+", "", short_phrase.lower())
+        if not any(norm == re.sub(r"\s+", "", x.lower()) for x in out):
+            out.append(short_phrase)
+            if len(out) >= 3:
+                break
+    return out
 
 
 def jsonld_country(soup):
