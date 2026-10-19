@@ -2,6 +2,7 @@
 import argparse
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -26,8 +27,6 @@ def rescore_fallback():
         print("ai_used column not in data/providers.csv.")
         return
 
-    # Identify rows where AI was not used
-    # ai_used can be boolean or string ('True'/'False')
     mask = (df["ai_used"] == False) | (df["ai_used"] == "False") | (df["ai_used"] == "")
     indices = df[mask].index.tolist()
     print(f"Found {len(indices)} rows where AI was not used to rescore.")
@@ -48,7 +47,6 @@ def rescore_fallback():
             except Exception:
                 rec = None
         
-        # If cache file doesn't exist under domain, try to construct minimal rec from row
         if not rec:
             rec = {
                 "name": row.get("name", ""),
@@ -59,31 +57,23 @@ def rescore_fallback():
                 "email": row.get("email", ""),
                 "phone": row.get("phone", ""),
                 "social_links": str(row.get("social_links", "")).split("; ") if row.get("social_links") else [],
-                "pricing_snippets": str(row.get("pricing_info", "")).split("; ") if row.get("pricing_info") else [],
+                "pricing_snippets": [s.strip() for s in str(row.get("pricing_info", "")).split("; ") if s.strip() and s.strip() != "Unknown"],
                 "portfolio_urls": str(row.get("portfolio_urls", "")).split("; ") if row.get("portfolio_urls") else [],
                 "meta_description": str(row.get("summary", "")),
                 "text_excerpt": str(row.get("experience_evidence", "")) + " " + str(row.get("summary", "")),
                 "pages_checked": str(row.get("pages_checked", "")).split("; ") if row.get("pages_checked") else [],
                 "category_hint": row.get("category", "Other"),
                 "source_query": row.get("source_query", ""),
-                "collected_at": row.get("collected_at", ""),
+                "collected_at": row.get("collected_at", datetime.now().strftime("%Y-%m-%d")),
             }
 
-        # Attempt evaluate with AI
         new_row = evaluate.evaluate(rec, use_ai=True)
-        # Update row fields in df
         for k, v in new_row.items():
-            if k in df.columns:
-                df.at[idx, k] = v
+            df.at[idx, k] = v
         rescored_count += 1
 
-    # Ensure scored_by column exists
-    if "scored_by" not in df.columns:
-        df["scored_by"] = df["ai_used"].apply(lambda x: "AI" if str(x).lower() == "true" else "fallback")
-    else:
-        df["scored_by"] = df["ai_used"].apply(lambda x: "AI" if str(x).lower() == "true" else "fallback")
+    df["scored_by"] = df["ai_used"].apply(lambda x: "AI" if str(x).lower() == "true" else "fallback")
 
-    # Dedup and re-sort / re-shortlist
     rows = df.to_dict(orient="records")
     rows = evaluate.dedup_by_domain(rows)
     rows = evaluate.add_shortlist(rows)
@@ -107,6 +97,8 @@ def main():
     ap.add_argument("--target", type=int, default=50, help="number of providers to collect")
     ap.add_argument("--no-ai", action="store_true", help="skip LLM, use keyword heuristics")
     ap.add_argument("--rescore-fallback", action="store_true", help="re-score only rows where AI was not used")
+    ap.add_argument("--refresh", action="store_true", help="ignore cache and re-fetch all providers")
+    ap.add_argument("--refresh-domain", type=str, default="", help="ignore cache for a single domain")
     args = ap.parse_args()
     logging.basicConfig(level=logging.WARNING)
 
@@ -117,16 +109,20 @@ def main():
     records = []
     with tqdm(total=args.target, desc="Collecting") as bar:
         for cand in discover.discover():
-            rec = collect.collect_one(cand)
+            refresh_this = args.refresh or (bool(args.refresh_domain) and cand["domain"] == args.refresh_domain.lower())
+            rec = collect.collect_one(cand, refresh=refresh_this)
             if rec:
                 records.append(rec)
                 bar.update(1)
             if len(records) >= args.target:
                 break
 
-    rows = [evaluate.evaluate(r, use_ai=not args.no_ai) for r in tqdm(records, desc="Evaluating")]
+    rows = []
+    for r in tqdm(records, desc="Evaluating"):
+        refresh_this = args.refresh or (bool(args.refresh_domain) and r.get("domain") == args.refresh_domain.lower())
+        ev_row = evaluate.evaluate(r, use_ai=not args.no_ai, refresh=refresh_this)
+        rows.append(ev_row)
     
-    # Dedup by normalized domain keeping higher-scored row
     rows = evaluate.dedup_by_domain(rows)
     rows = evaluate.add_shortlist(rows)
     out_dir = "data/test" if args.target < 50 else "data"
@@ -138,16 +134,28 @@ def main():
 
     print("\n--- Summary ---")
     print(f"Total providers: {len(df)}")
-    print(f"Shortlisted: {shortlisted_count}")
+    print("\nProviders per category:")
+    for cat, count in df["category"].value_counts().items():
+        print(f"  {cat}: {count}")
+    
+    print(f"\nShortlisted: {shortlisted_count}")
     print(f"AI used: {ai_count}")
     print(f"Fallback used: {fallback_count}")
+
+    print("\nVerification status counts:")
+    for col in ["experience_status", "portfolio_status", "pricing_status"]:
+        if col in df.columns:
+            vc = df[col].value_counts().to_dict()
+            v_str = ", ".join(f"{k}: {v}" for k, v in vc.items())
+            print(f"  {col}: {v_str}")
+
     if evaluate.failure_counts:
-        print("Failures by status code:")
+        print("\nFailures by status code:")
         for sc, cnt in sorted(evaluate.failure_counts.items()):
             print(f"  HTTP {sc}: {cnt}")
     else:
-        print("Failures by status code: None")
-    print("Dashboard: streamlit run app.py")
+        print("\nFailures by status code: None")
+    print("\nDashboard: streamlit run app.py")
 
 
 if __name__ == "__main__":

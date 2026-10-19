@@ -30,6 +30,8 @@ countries = side.multiselect("Country", sorted(df.country.unique()))
 min_score = side.slider("Min suitability score", 0, 100, 0)
 only_short = side.checkbox("Shortlisted only")
 only_ai = side.checkbox("AI-scored only")
+
+# Has public pricing: treat Unknown, empty, nan as no pricing
 has_price = side.checkbox("Has public pricing")
 q = side.text_input("Search name / services")
 
@@ -39,11 +41,11 @@ if cats:
 if countries:
     f = f[f.country.isin(countries)]
 if only_short:
-    f = f[f.shortlisted == True]  # noqa: E712
+    f = f[f.shortlisted.astype(str).str.lower().isin(["true", "1"])]
 if only_ai:
     f = f[f.scored_by == "AI"]
 if has_price:
-    f = f[f.pricing_info != ""]
+    f = f[(f.pricing_info != "") & (f.pricing_info.str.lower() != "unknown")]
 if q:
     f = f[f.name.str.contains(q, case=False) | f.services.str.contains(q, case=False)]
 
@@ -54,9 +56,9 @@ f = f.sort_values(by=sort_col, ascending=sort_asc)
 
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Providers", len(f))
-c2.metric("Shortlisted", int((f.shortlisted == True).sum()))  # noqa: E712
+c2.metric("Shortlisted", int(f.shortlisted.astype(str).str.lower().isin(["true", "1"]).sum()))
 c3.metric("Avg score", round(f.suitability_score.mean(), 1) if len(f) else 0)
-c4.metric("With pricing", int((f.pricing_info != "").sum()))
+c4.metric("With pricing", int(((f.pricing_info != "") & (f.pricing_info.str.lower() != "unknown")).sum()))
 c5.metric("AI-scored", int((f.scored_by == "AI").sum()))
 
 st.subheader("Average score by category")
@@ -65,7 +67,6 @@ if len(f):
 
 st.subheader("Providers")
 show = ["rank", "shortlisted", "suitability_score", "scored_by", "name", "website", "category", "country", "services", "email", "pricing_info"]
-# Show columns that exist in f
 valid_show = [c for c in show if c in f.columns]
 st.dataframe(
     f[valid_show], use_container_width=True, hide_index=True,
@@ -137,7 +138,7 @@ if selected_compare:
 
                 st.markdown(f"**Country:** {p['country']}")
                 st.markdown(f"**Email:** {p['email'] or 'None'}")
-                st.markdown(f"**Pricing:** {p['pricing_info'] or 'Not published'}")
+                st.markdown(f"**Pricing:** {p['pricing_info'] or 'Unknown'}")
                 st.markdown(f"**Services:** {p['services'] or 'None'}")
                 st.markdown(f"**Summary:** {p['summary']}")
 
@@ -164,12 +165,38 @@ if len(f):
         st.write(f"**Experience evidence:** {row['experience_evidence']}")
         st.write(f"**Red flags:** {row['red_flags'] or 'none noted'}")
 
+        # Strengths & limitations
+        if row.get("strengths"):
+            st.markdown(f"**Strengths:** {row['strengths']}")
+        if row.get("limitations"):
+            st.markdown(f"**Limitations:** {row['limitations']}")
+
     with b:
         st.write(f"**Country:** {row['country']} _(source: {row['country_source']})_")
         st.write(f"**Email:** {row['email'] or 'not found'}  |  **Phone:** {row['phone'] or 'not found'}")
-        st.write(f"**Pricing seen:** {row['pricing_info'] or 'not published'}")
+        st.write(f"**Pricing seen:** {row['pricing_info'] or 'Unknown'}")
         st.write(f"**Portfolio:** {row['portfolio_urls'] or 'not found'}")
-        
+        if row.get("last_checked"):
+            st.caption(f"📅 Last checked: {row['last_checked']}")
+
+        # Sources & Verification Status
+        st.markdown("#### Evidence Verification")
+        exp_st = row.get("experience_status", "Unknown")
+        port_st = row.get("portfolio_status", "Unknown")
+        price_st = row.get("pricing_status", "Unknown")
+
+        st.markdown(f"• **Experience:** `{exp_st}`")
+        if row.get("experience_source_url"):
+            st.caption(f"  Source: {row['experience_source_url']}")
+
+        st.markdown(f"• **Portfolio:** `{port_st}`")
+        if row.get("portfolio_source_url"):
+            st.caption(f"  Source: {row['portfolio_source_url']}")
+
+        st.markdown(f"• **Pricing:** `{price_st}`")
+        if row.get("pricing_source_url"):
+            st.caption(f"  Source: {row['pricing_source_url']}")
+
         st.markdown("#### Sub-scores")
         st.write(f"Skill relevance: **{row['skill_relevance']}** / 10")
         st.progress(min(1.0, max(0.0, float(row['skill_relevance']) / 10.0)))

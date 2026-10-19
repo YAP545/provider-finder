@@ -4,21 +4,41 @@ import pandas as pd
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
 
-COLUMNS = ["rank", "shortlisted", "suitability_score", "name", "website", "category", "provider_type", "country",
-           "country_source", "services", "key_skills", "portfolio_urls", "pricing_info", "email", "phone",
-           "social_links", "summary", "experience_evidence", "red_flags", "skill_relevance", "experience_score",
-           "portfolio_score", "transparency_score", "confidence", "ai_used", "scored_by", "source_query", "pages_checked",
-           "collected_at"]
+COLUMNS = [
+    "rank", "shortlisted", "suitability_score", "name", "website", "category", "provider_type", "country",
+    "country_source", "services", "key_skills", "portfolio_urls", "pricing_info", "email", "phone",
+    "social_links", "summary", "experience_evidence", "red_flags", "skill_relevance", "experience_score",
+    "portfolio_score", "transparency_score", "confidence", "ai_used", "scored_by", "source_query", "pages_checked",
+    "collected_at",
+    "experience_source_url", "experience_status",
+    "portfolio_source_url", "portfolio_status",
+    "pricing_source_url", "pricing_status",
+    "last_checked", "strengths", "limitations",
+]
 
 
 def export(rows: list, out_dir: str = "data") -> pd.DataFrame:
     out = Path(out_dir)
-    out.mkdir(exist_ok=True)
-    df = pd.DataFrame(rows)[COLUMNS]
+    out.mkdir(parents=True, exist_ok=True)
+    
+    # Ensure every column exists on every row dict
+    normalized_rows = []
+    for r in rows:
+        row_dict = {}
+        for c in COLUMNS:
+            row_dict[c] = r.get(c, "")
+        normalized_rows.append(row_dict)
+
+    df = pd.DataFrame(normalized_rows)[COLUMNS]
     df.to_csv(out / "providers.csv", index=False, encoding="utf-8-sig")
+    
+    # Ensure boolean shortlisted
+    shortlisted_mask = df["shortlisted"].astype(str).str.lower().isin(["true", "1"])
+    shortlist_df = df[shortlisted_mask]
+
     with pd.ExcelWriter(out / "providers.xlsx", engine="openpyxl") as xw:
         df.to_excel(xw, sheet_name="All providers", index=False)
-        df[df.shortlisted].to_excel(xw, sheet_name="Shortlist", index=False)
+        shortlist_df.to_excel(xw, sheet_name="Shortlist", index=False)
         for ws in xw.book.worksheets:
             for c in ws[1]:
                 c.font = Font(name="Arial", bold=True, color="FFFFFF")

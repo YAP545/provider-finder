@@ -5,7 +5,7 @@ import json
 import re
 import time
 import logging
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib import robotparser
 from urllib.parse import urljoin, urlparse
@@ -28,20 +28,38 @@ LINK_GROUPS = {
 }
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 BAD_EMAIL = re.compile(r"\.(png|jpe?g|gif|svg|webp|woff2?)$|sentry|example\.|wixpress|your(name|email)", re.I)
+
+# Strict pricing detection: require real pricing phrases
 PRICE_RE = re.compile(r"(?:[$€£₹]|USD|EUR|GBP|INR)\s?\d[\d,.]*\s?[kK]?(?:\s?(?:/|per)\s?(?:hr|hour|month|mo|project))?")
-# Context must contain a genuine pricing phrase …
 PRICE_CTX = re.compile(
     r"starting\s+at|from\s+[$€£₹]|packages?\s+from|pricing\s+starts?|"
     r"/\s*hr\b|/\s*hour\b|per\s+hour|per\s+month|per\s+project|"
     r"\brates?\b|\bplan\b|\bretainer\b|\bpackages?\b|\bpricing\b",
     re.I,
 )
-# … and must NOT be a funding / news snippet
 PRICE_NOISE = re.compile(
-    r"seed\s+fund|raised|secures?|funding|investment|million|startup|announce",
+    r"seed\s+fund|raised|secures?\s+(?:[$€£₹]|\d)|funding|investment\s+round|series\s+[a-e]|venture\s+capital|\bmillion\b",
     re.I,
 )
 SOCIAL_HOSTS = ("linkedin.com", "twitter.com", "x.com", "github.com", "dribbble.com", "behance.net", "instagram.com")
+
+
+# ---------- cache helper with TTL ----------
+def is_cache_valid(cache_file: Path, ttl_days: int = None) -> bool:
+    if ttl_days is None:
+        ttl_days = getattr(config, "CACHE_TTL_DAYS", 14)
+    if not cache_file.exists():
+        return False
+    try:
+        data = json.loads(cache_file.read_text(encoding="utf-8"))
+        coll_at = data.get("collected_at")
+        if not coll_at:
+            mtime = datetime.fromtimestamp(cache_file.stat().st_mtime)
+            return datetime.now() - mtime < timedelta(days=ttl_days)
+        dt = datetime.fromisoformat(coll_at)
+        return datetime.now() - dt < timedelta(days=ttl_days)
+    except Exception:
+        return False
 
 
 # ---------- polite fetching ----------
@@ -117,7 +135,6 @@ def extract_emails(soup, text: str, domain: str):
 
 
 def extract_phones(soup):
-    # only explicit tel: links -> no guessing from free text
     return [a["href"][4:].strip() for a in soup.find_all("a", href=True) if a["href"].lower().startswith("tel:")]
 
 
@@ -162,10 +179,14 @@ def guess_name(soup, domain: str) -> str:
 
 
 # ---------- main ----------
-def collect_one(cand: dict):
+def collect_one(cand: dict, refresh: bool = False):
+    CACHE.mkdir(parents=True, exist_ok=True)
     cache_file = CACHE / f"{cand['domain']}.json"
-    if cache_file.exists():
-        return json.loads(cache_file.read_text())
+    if not refresh and is_cache_valid(cache_file):
+        try:
+            return json.loads(cache_file.read_text(encoding="utf-8"))
+        except Exception:
+            pass
 
     home = fetch(cand["url"])
     if home is None:
@@ -202,17 +223,17 @@ def collect_one(cand: dict):
             country, country_source = config.CCTLD_COUNTRY[tld], "domain-tld (weak signal)"
     meta = home.find("meta", attrs={"name": "description"})
 
+    pricing_list = list(dict.fromkeys(pricing))[:5]
     rec = {
         "name": guess_name(home, domain), "website": cand["url"], "domain": domain,
         "country": country or "Unknown", "country_source": country_source or "not found",
         "email": emails[0] if emails else "", "phone": phones[0] if phones else "",
-        "social_links": sorted(socials)[:6], "pricing_snippets": list(dict.fromkeys(pricing))[:5],
+        "social_links": sorted(socials)[:6], "pricing_snippets": pricing_list,
         "portfolio_urls": list(dict.fromkeys(portfolio))[:5],
         "meta_description": (meta.get("content", "").strip() if meta else "")[:300],
         "text_excerpt": "\n".join(texts)[:7000], "pages_checked": list(soups.keys()),
         "category_hint": cand["category_hint"], "source_query": cand["source_query"],
         "collected_at": date.today().isoformat(),
     }
-    CACHE.mkdir(parents=True, exist_ok=True)
-    cache_file.write_text(json.dumps(rec, indent=1))
+    cache_file.write_text(json.dumps(rec, indent=1, ensure_ascii=False), encoding="utf-8")
     return rec

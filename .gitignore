@@ -2,6 +2,9 @@
 __pycache__/
 cache/
 data/cache/
+data/test/
+data/backup/
 *.pyc
 .venv/
 venv/
+.pytest_cache/

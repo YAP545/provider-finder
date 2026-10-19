@@ -113,6 +113,28 @@ python -m streamlit run app.py
 
 ---
 
+## Data quality
+
+- **Evidence verification** — Experience claims, portfolio links, and pricing snippets are independently verified in code against the raw cached website text (without asking the LLM):
+  - **`Verified`**: The claim numbers, key terms, or portfolio URLs were located directly in the crawl text.
+  - **`Unverified`**: The AI generated an assertion that could not be confirmed in the website text excerpt.
+  - **`Unknown`**: No evidence or pricing was published by the provider.
+- **Cache expiration & TTL** — Both crawled site text and LLM evaluations are cached with a configurable 14-day TTL (`CACHE_TTL_DAYS=14`). Expired records are automatically re-fetched.
+  - Use `--refresh` to bypass cache and re-crawl all providers:
+    ```bash
+    python pipeline.py --target 50 --refresh
+    ```
+  - Use `--refresh-domain DOMAIN` to invalidate and re-fetch a single domain:
+    ```bash
+    python pipeline.py --refresh-domain example.com
+    ```
+- **Automated tests** — Run offline unit tests covering scraping, strict pricing extraction, duplicate resolution, API retry/backoff, and scoring:
+  ```bash
+  python -m pytest
+  ```
+
+---
+
 ## Tech
 
 - **Python 3.10+**
