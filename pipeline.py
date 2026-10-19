@@ -129,7 +129,8 @@ def main():
     # Dedup by normalized domain keeping higher-scored row
     rows = evaluate.dedup_by_domain(rows)
     rows = evaluate.add_shortlist(rows)
-    df = export.export(rows)
+    out_dir = "data/test" if args.target < 50 else "data"
+    df = export.export(rows, out_dir=out_dir)
 
     ai_count = int((df["scored_by"] == "AI").sum()) if "scored_by" in df.columns else int(df["ai_used"].sum())
     fallback_count = len(df) - ai_count
