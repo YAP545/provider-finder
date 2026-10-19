@@ -1,61 +1,124 @@
-# Provider Discovery & Research Tool
+# Provider Finder
 
-Finds freelancers/agencies (web dev, AI automation, design, marketing, business ops), collects **only publicly
-published** details from their own websites, scores them with AI + transparent rules, shortlists the best, and
-exports CSV/Excel with a Streamlit dashboard.
+A research tool that automatically discovers, evaluates, and ranks service providers (web development, AI automation, design, marketing, and business operations agencies/freelancers) by crawling their own websites — no marketplace or directory data used.
+
+**Live demo → [provider-finder-5epi8nt2sk64a3kwetgvnr.streamlit.app](https://provider-finder-5epi8nt2sk64a3kwetgvnr.streamlit.app/)**
+
+---
+
+## What it does
+
+- **Discovery** — searches DuckDuckGo across five categories and six regions (US, UK, India, Australia, Canada, global) using `ddgs`; filters out marketplaces, directories, and listicle pages
+- **Collection** — visits each provider's own website (home + up to 4 sub-pages: about, services, portfolio, pricing, contact); respects `robots.txt` and rate-limits
+- **Extraction** — pulls services, key skills, email, phone, social links, portfolio URLs, pricing snippets, and country from page text and JSON-LD structured data
+- **LLM evaluation** — sends page text to Google Gemini (or any OpenAI-compatible endpoint) to classify the provider, identify services/skills, assess experience evidence, and generate a summary; falls back to keyword-rule heuristics if the API call fails or no key is configured
+- **Transparent scoring** — suitability score (0–100) is computed in code from four weighted sub-scores: **skill relevance**, **experience**, **portfolio**, and **transparency**; the LLM never picks the score directly
+- **Shortlisting** — top 10 providers with score ≥ 50 are flagged as shortlisted
+- **Dashboard** — Streamlit app with sidebar filters (category, country, min score, shortlisted only, has pricing, keyword search) plus per-provider detail view and CSV download
+- **Export** — results saved to `data/providers.csv` and `data/providers.xlsx` (two sheets: All providers + Shortlist, formatted with frozen header row)
+
+---
+
+## How scoring works
+
+The final **suitability score** is:
 
 ```
-discover.py  ->  collect.py  ->  evaluate.py  ->  export.py  ->  app.py (Streamlit)
- (search)        (public pages)   (LLM + scoring)   (CSV/XLSX)     (dashboard)
+score = 10 × (0.35 × skill + 0.25 × experience + 0.25 × portfolio + 0.15 × transparency)
 ```
 
-## Quick start
+| Sub-score | Source | Max |
+|-----------|--------|-----|
+| **skill** (0–10) | LLM's `skill_relevance` field — how clearly the site shows expertise in its category | 10 |
+| **experience** (0–10) | LLM's `experience_score` — years mentioned, named clients, case studies | 10 |
+| **portfolio** (0–10) | Code-counted: 2+ portfolio URLs → 8 pts, 1 → 5 pts; +2 if "case study" appears in text | 10 |
+| **transparency** (0–10) | Code-counted: email (+4), phone (+1), public pricing (+3), known country (+2) | 10 |
+
+**Keyword-rule fallback** (used when no LLM key is set or the API call fails): skill relevance is estimated from regex hit counts across eight service patterns (web dev, AI/automation, UI/UX, branding, SEO, content marketing, virtual assistance, bookkeeping); experience score is derived from year mentions and "clients"/"case study" keywords. The fallback is always noted in the `confidence` and `ai_used` columns.
+
+---
+
+## Project structure
+
+```
+provider-finder/
+├── pipeline.py          # Entry point: orchestrates all four steps
+├── discover.py          # Step 1 — DuckDuckGo search, candidate filtering
+├── collect.py           # Step 2 — website crawl, extraction (email/phone/pricing/portfolio)
+├── evaluate.py          # Step 3 — LLM evaluation + keyword fallback + scoring
+├── export.py            # Step 4 — CSV + formatted Excel output
+├── config.py            # All settings: categories, weights, blocked domains, LLM config
+├── app.py               # Streamlit dashboard
+├── requirements.txt     # Python dependencies
+├── .env.example         # Template — copy to .env and fill in your values
+└── data/
+    ├── providers.csv    # Pipeline output (tracked in git as example data)
+    ├── providers.xlsx   # Same data, formatted Excel
+    └── cache/           # Per-domain JSON cache (git-ignored)
+```
+
+---
+
+## Run locally
+
+### 1. Install dependencies
+
 ```bash
 pip install -r requirements.txt
-cp .env.example .env          # set BOT_CONTACT and (optionally) a free LLM key
-python pipeline.py --target 50           # ~15-30 min (polite 1.5s delay per request)
-streamlit run app.py
 ```
-Outputs: `data/providers.csv`, `data/providers.xlsx` (sheets: *All providers*, *Shortlist*).
-Without an LLM key it runs in rule-based mode (`--no-ai`); the `ai_used` column shows which rows were AI-scored.
 
-## Free tools used
-| Need | Tool |
-|---|---|
-| Discovery | DuckDuckGo search via the `ddgs` package (no key) |
-| Page parsing | requests + BeautifulSoup |
-| AI evaluation | Any OpenAI-compatible endpoint: Gemini free tier, Groq free tier, or local Ollama |
-| Dashboard | Streamlit (free hosting on Streamlit Community Cloud) |
+### 2. Configure environment
 
-## Data fields
-name, website, country (+ how it was determined), services, key skills, portfolio links, pricing snippets,
-public email/phone, social links, AI summary, experience evidence, red flags, sub-scores, suitability score,
-shortlist flag, confidence, `ai_used`, source query, pages checked, collection date.
+Copy `.env.example` to `.env` and fill in your values:
 
-## Scoring (0-100)
-`10 × (0.35·skill_relevance + 0.25·experience + 0.25·portfolio + 0.15·transparency)`
-- **skill_relevance, experience** (0-10): judged by the LLM from page text only (keyword rules if no LLM).
-- **portfolio** (0-10): computed in code from portfolio links and case-study mentions.
-- **transparency** (0-10): computed in code: public email +4, phone +1, pricing +3, country +2.
-Shortlist = top 10 with score ≥ 50 (edit in `config.py`). Weights are in `config.py` too.
+```bash
+cp .env.example .env   # Windows: copy .env.example .env
+```
 
-## Ethics & "no invention" rules
-- Only the provider's **own public website**; at most 5 pages each; 1.5s delay; descriptive User-Agent.
-- Honors `robots.txt`; skips the site if it disallows us or can't be checked.
-- Never touches LinkedIn, Upwork, Fiverr, Clutch, etc. (blocklist in `config.py`); social links are recorded, not scraped.
-- Missing data stays empty / "Unknown" / "none found". Phones come only from `tel:` links; emails only if published.
-- Country comes from structured data when present; otherwise a weak country-code-TLD hint (labelled as such); `.com` → Unknown.
-- Page text is passed to the LLM as untrusted data, and the prompt forbids using outside knowledge.
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `LLM_API_KEY` | Yes (for AI mode) | Your Google Gemini API key (or key for any OpenAI-compatible endpoint) |
+| `LLM_MODEL` | Yes (for AI mode) | Model name, e.g. `gemini-2.5-flash` |
+| `LLM_BASE_URL` | No | Leave blank for Gemini; set to your endpoint URL for Groq, Ollama, etc. |
+| `BOT_CONTACT` | No | Your contact email added to the crawler's User-Agent string |
 
-## Known limitations (v1)
-- Search results skew toward SEO-strong agencies; add queries/regions in `config.py`.
-- JS-rendered sites may yield little text (low confidence, lower scores).
-- Pricing detection is regex-based and may miss or mis-attribute figures; always verify before contacting.
-- LLM scores are a screening aid, not a verdict. Review the evidence columns.
+> Without `LLM_API_KEY` / `LLM_MODEL` the pipeline still runs in keyword-rule mode — no API key needed.
 
-## Deploying the demo
-Run the pipeline, commit `data/providers.csv`, push to GitHub, then deploy `app.py` on
-[Streamlit Community Cloud](https://streamlit.io/cloud).
+### 3. Run the pipeline
 
-## Next steps
-Async fetching, Playwright for JS sites (respecting robots), dedupe by company, user-weighted scoring, email-ready outreach drafts.
+```bash
+python pipeline.py --target 50        # collect and evaluate 50 providers (AI mode)
+python pipeline.py --target 50 --no-ai  # keyword-rules only, no API calls
+```
+
+Results are saved to `data/providers.csv` and `data/providers.xlsx`.
+
+### 4. Launch the dashboard
+
+```bash
+python -m streamlit run app.py
+```
+
+---
+
+## Tech
+
+- **Python 3.10+**
+- **Streamlit** — interactive dashboard
+- **pandas** — data wrangling and CSV/Excel I/O
+- **openpyxl** — formatted Excel export
+- **requests + BeautifulSoup4** — polite website crawling
+- **ddgs** — DuckDuckGo search API (no key required)
+- **Google Gemini API** (optional) — LLM evaluation via `google-generativeai`-compatible REST endpoint
+- **python-dotenv** — environment variable loading
+
+---
+
+## Limitations
+
+- **Rate limits** — DuckDuckGo and the Gemini free tier both throttle heavy usage; the pipeline adds delays and retries but very large runs may hit 429s
+- **Pricing extraction is heuristic** — only real pricing phrases (e.g. "starting at $X", "/hr", "per month", "packages from") are captured; results vary by how clearly a provider publishes rates
+- **Search availability** — discovery depends on DuckDuckGo returning results for the configured queries; niche categories or regions may yield fewer candidates
+- **robots.txt compliance** — sites that disallow crawling are skipped entirely, which can reduce coverage
+- **Country detection** — derived from JSON-LD structured data or ccTLD; many providers will show as "Unknown"
+- **No login or JavaScript rendering** — dynamic/SPA sites that require JS to display content will return limited text
